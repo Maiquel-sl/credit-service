@@ -1,0 +1,8 @@
+spring:
+  application:
+    name: credit-service
+  mongodb:
+    uri: mongodb://localhost:27017/credit-service-db
+
+server:
+  port: 8083
