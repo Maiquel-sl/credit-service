@@ -2,7 +2,7 @@ spring:
   application:
     name: credit-service
   mongodb:
-    uri: mongodb://localhost:27017/credit-service-db
+    uri: ${MONGODB_URI:mongodb://localhost:27017/credit-service-db}
 
 server:
-  port: 8083
+  port: ${PORT:8083}
