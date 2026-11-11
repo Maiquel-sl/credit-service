@@ -1,5 +1,7 @@
 package com.bank.credit.service.impl;
 
+import com.bank.credit.events.CreditTransactionEvent;
+import com.bank.credit.messaging.CreditEventPublisher;
 import com.bank.credit.model.*;
 import com.bank.credit.repository.*;
 import com.bank.credit.service.CreditService;
@@ -16,13 +18,16 @@ public class CreditServiceImpl implements CreditService {
     private final CreditRepository creditRepository;
     private final CreditCardRepository cardRepository;
     private final CreditTransactionRepository transactionRepository;
+    private final CreditEventPublisher eventPublisher;
 
     public CreditServiceImpl(CreditRepository creditRepository,
                              CreditCardRepository cardRepository,
-                             CreditTransactionRepository transactionRepository) {
+                             CreditTransactionRepository transactionRepository,
+                             CreditEventPublisher eventPublisher) {
         this.creditRepository = creditRepository;
         this.cardRepository = cardRepository;
         this.transactionRepository = transactionRepository;
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -77,7 +82,21 @@ public class CreditServiceImpl implements CreditService {
                     tx.setDescription(description);
                     tx.setTimestamp(LocalDateTime.now());
 
-                    return creditRepository.save(credit).then(transactionRepository.save(tx));
+                    return creditRepository.save(credit)
+                    .then(transactionRepository.save(tx))
+                    .doOnSuccess(savedTx -> eventPublisher.publish(new CreditTransactionEvent(
+                                    savedTx.getTransactionNumber(),
+                                    credit.getCustomerId(),
+                                    credit.getId(),
+                                    "CREDIT",
+                                    credit.getType(),
+                                    credit.getCreditNumber(),
+                                    savedTx.getType(),
+                                    savedTx.getAmount(),
+                                    credit.getCurrency(),
+                                    savedTx.getDescription(),
+                                    savedTx.getTimestamp()
+                            )));
                 });
     }
 
@@ -112,7 +131,26 @@ public class CreditServiceImpl implements CreditService {
                     tx.setDescription(description);
                     tx.setTimestamp(LocalDateTime.now());
 
-                    return cardRepository.save(card).then(transactionRepository.save(tx));
+                    // Determina el subtipo dinámicamente según el perfil del cliente
+                    String subType = "PERSONAL".equals(card.getCustomerType()) 
+                            ? "PERSONAL_CREDIT_CARD" 
+                            : "BUSINESS_CREDIT_CARD";
+
+                    return cardRepository.save(card)
+                    .then(transactionRepository.save(tx))
+                    .doOnSuccess(savedTx -> eventPublisher.publish(new CreditTransactionEvent(
+                                    savedTx.getTransactionNumber(),
+                                    card.getCustomerId(),
+                                    card.getId(),
+                                    "CREDIT_CARD",
+                                    subType,
+                                    card.getCardNumber(),
+                                    savedTx.getType(),
+                                    savedTx.getAmount(),
+                                    card.getCurrency(),
+                                    savedTx.getDescription(),
+                                    savedTx.getTimestamp()
+                            )));
                 });
     }
 }
