@@ -12,7 +12,11 @@ spring:
           brokers: ${KAFKA_BROKERS:localhost:9092}
       bindings:
         creditEventProducer-out-0:
-          destination: bank-credit-events
+          destination: credit-events
+          content-type: application/json
+        customerEventConsumer-in-0:
+          destination: customer-events
+          group: credit-customer-replica-group
           content-type: application/json
 
 springdoc:

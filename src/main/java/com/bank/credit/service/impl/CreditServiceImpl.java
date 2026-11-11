@@ -18,45 +18,74 @@ public class CreditServiceImpl implements CreditService {
     private final CreditRepository creditRepository;
     private final CreditCardRepository cardRepository;
     private final CreditTransactionRepository transactionRepository;
+    private final CustomerReplicaRepository customerReplicaRepository;
     private final CreditEventPublisher eventPublisher;
 
     public CreditServiceImpl(CreditRepository creditRepository,
                              CreditCardRepository cardRepository,
                              CreditTransactionRepository transactionRepository,
+                             CustomerReplicaRepository customerReplicaRepository,
                              CreditEventPublisher eventPublisher) {
         this.creditRepository = creditRepository;
         this.cardRepository = cardRepository;
         this.transactionRepository = transactionRepository;
+        this.customerReplicaRepository = customerReplicaRepository;
         this.eventPublisher = eventPublisher;
     }
 
     @Override
     public Mono<Credit> createCredit(Credit credit) {
-        return creditRepository.findByCustomerId(credit.getCustomerId())
-                .collectList()
-                .flatMap(existingCredits -> {
-                    // Regla de negocio: Solo un crédito por persona
-                    if ("PERSONAL".equals(credit.getCustomerType()) && !existingCredits.isEmpty()) {
-                        return Mono.error(new IllegalArgumentException("Un cliente personal solo puede tener un único crédito"));
+        // 1. Validación local contra la réplica de clientes (sin obligación de tener cuenta bancaria)
+        return customerReplicaRepository.findById(credit.getCustomerId())
+                .switchIfEmpty(Mono.error(new IllegalArgumentException("Cliente no encontrado en la réplica local")))
+                .flatMap(customer -> {
+                    if (!"ACTIVE".equals(customer.getStatus())) {
+                        return Mono.error(new IllegalArgumentException("El cliente se encuentra inactivo"));
                     }
-                    credit.setCreditNumber("CRD-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
-                    credit.setStatus("ACTIVE");
-                    credit.setCreatedAt(LocalDateTime.now());
-                    credit.setUpdatedAt(LocalDateTime.now());
-                    return creditRepository.save(credit);
+
+                    String verifiedType = customer.getType();
+                    credit.setCustomerType(verifiedType);
+
+                    return creditRepository.findByCustomerId(credit.getCustomerId())
+                            .collectList()
+                            .flatMap(existingCredits -> {
+                                // Regla de negocio: Solo un crédito por cliente personal
+                                if ("PERSONAL".equals(verifiedType) && !existingCredits.isEmpty()) {
+                                    return Mono.error(new IllegalArgumentException(
+                                            "Un cliente personal solo puede tener un único crédito"));
+                                }
+
+                                credit.setType("PERSONAL".equals(verifiedType) ? "PERSONAL_CREDIT" : "BUSINESS_CREDIT");
+                                credit.setCreditNumber("CRD-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
+                                credit.setBalanceOwed(credit.getAmountGranted());
+                                credit.setStatus("ACTIVE");
+                                credit.setCreatedAt(LocalDateTime.now());
+                                credit.setUpdatedAt(LocalDateTime.now());
+                                return creditRepository.save(credit);
+                            });
                 });
     }
 
     @Override
     public Mono<CreditCard> createCreditCard(CreditCard card) {
-        card.setCardNumber("4557" + UUID.randomUUID().toString().replaceAll("[\\D]", "").substring(0, 12));
-        card.setAvailableBalance(card.getCreditLimit());
-        card.setBalanceOwed(BigDecimal.ZERO);
-        card.setStatus("ACTIVE");
-        card.setExpirationDate("11/31");
-        card.setCreatedAt(LocalDateTime.now());
-        card.setUpdatedAt(LocalDateTime.now());
-        return cardRepository.save(card);
+        // Validación local contra la réplica de clientes
+        return customerReplicaRepository.findById(card.getCustomerId())
+                .switchIfEmpty(Mono.error(new IllegalArgumentException("Cliente no encontrado en la réplica local")))
+                .flatMap(customer -> {
+                    if (!"ACTIVE".equals(customer.getStatus())) {
+                        return Mono.error(new IllegalArgumentException("El cliente se encuentra inactivo"));
+                    }
+
+                    card.setCustomerType(customer.getType());
+                    card.setCardNumber("4557" + UUID.randomUUID().toString().replaceAll("[\\D]", "").substring(0, 12));
+                    card.setAvailableBalance(card.getCreditLimit());
+                    card.setBalanceOwed(BigDecimal.ZERO);
+                    card.setStatus("ACTIVE");
+                    card.setExpirationDate("11/31");
+                    card.setCreatedAt(LocalDateTime.now());
+                    card.setUpdatedAt(LocalDateTime.now());
+                    return cardRepository.save(card);
+                });
     }
 
     @Override
