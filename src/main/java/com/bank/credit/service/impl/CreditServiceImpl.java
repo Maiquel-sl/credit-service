@@ -5,6 +5,9 @@ import com.bank.credit.messaging.CreditEventPublisher;
 import com.bank.credit.model.*;
 import com.bank.credit.repository.*;
 import com.bank.credit.service.CreditService;
+import com.bank.credit.util.ReactiveFallbackHandler;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.timelimiter.annotation.TimeLimiter;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -34,6 +37,8 @@ public class CreditServiceImpl implements CreditService {
     }
 
     @Override
+    @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
+    @TimeLimiter(name = "bankServiceCB")
     public Mono<Credit> createCredit(Credit credit) {
         // 1. Validación local contra la réplica de clientes (sin obligación de tener cuenta bancaria)
         return customerReplicaRepository.findById(credit.getCustomerId())
@@ -67,6 +72,8 @@ public class CreditServiceImpl implements CreditService {
     }
 
     @Override
+    @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
+    @TimeLimiter(name = "bankServiceCB")
     public Mono<CreditCard> createCreditCard(CreditCard card) {
         // Validación local contra la réplica de clientes
         return customerReplicaRepository.findById(card.getCustomerId())
@@ -89,12 +96,18 @@ public class CreditServiceImpl implements CreditService {
     }
 
     @Override
+    @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericFluxFallback")
+    @TimeLimiter(name = "bankServiceCB")
     public Flux<Credit> getCreditsByCustomerId(String customerId) { return creditRepository.findByCustomerId(customerId); }
 
     @Override
+    @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
+    @TimeLimiter(name = "bankServiceCB")
     public Mono<CreditCard> getCreditCardByNumber(String cardNumber) { return cardRepository.findByCardNumber(cardNumber); }
 
     @Override
+    @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
+    @TimeLimiter(name = "bankServiceCB")
     public Mono<CreditTransaction> executeCreditPayment(String creditNumber, BigDecimal amount, String description) {
         return creditRepository.findByCreditNumber(creditNumber)
                 .switchIfEmpty(Mono.error(new RuntimeException("Crédito no encontrado")))
@@ -130,6 +143,8 @@ public class CreditServiceImpl implements CreditService {
     }
 
     @Override
+    @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
+    @TimeLimiter(name = "bankServiceCB")
     public Mono<CreditTransaction> executeCardOperation(String cardNumber, String type, BigDecimal amount, String description) {
         return cardRepository.findByCardNumber(cardNumber)
                 .switchIfEmpty(Mono.error(new RuntimeException("Tarjeta de crédito no encontrada")))
@@ -181,5 +196,19 @@ public class CreditServiceImpl implements CreditService {
                                     savedTx.getTimestamp()
                             )));
                 });
+    }
+
+    // =========================================================================
+    // MÉTODOS FALLBACK GENÉRICOS PARA TODA LA CLASE
+    // =========================================================================
+
+    @SuppressWarnings("unused")
+    private <T> Mono<T> genericMonoFallback(Throwable ex) {
+        return ReactiveFallbackHandler.handleMonoFallback("CreditService", ex);
+    }
+
+    @SuppressWarnings("unused")
+    private <T> Flux<T> genericFluxFallback(Throwable ex) {
+        return ReactiveFallbackHandler.handleFluxFallback("CreditService", ex);
     }
 }
