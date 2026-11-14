@@ -2,6 +2,8 @@ package com.bank.credit.model;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.mapping.Field;
+import org.springframework.data.mongodb.core.mapping.FieldType;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
@@ -10,6 +12,7 @@ public class CreditCard {
     @Id
     private String id;
     private String cardNumber;
+    @Field(targetType = FieldType.OBJECT_ID)
     private String customerId;
     private String customerType;
     private String status;
