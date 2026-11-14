@@ -5,7 +5,7 @@ spring:
     uri: ${MONGODB_URI:mongodb://localhost:27017/credit-service-db}
   cloud:
     function:
-      definition: creditEventProducer
+      definition: creditEventProducer;customerEventConsumer
     stream:
       kafka:
         binder:
