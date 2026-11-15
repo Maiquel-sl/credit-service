@@ -20,7 +20,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Credit'
+              $ref: "#/components/schemas/Credit"
             examples:
               personalCredit:
                 summary: Personal Loan Request
@@ -31,18 +31,40 @@ paths:
                   interestRate: 12.5
                   installments: 12
       responses:
-        '201':
+        "201":
           description: Credit granted and provisioned successfully.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Credit'
-        '400':
-          description: Customer not found/inactive or Personal customer already holds an active credit.
+                $ref: "#/components/schemas/Credit"
+        "400":
+          description: Business rule violation (e.g., customer has overdue debt, inactive customer, or Personal customer already holds an active credit).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                personalCreditLimit:
+                  summary: Personal customer single-credit limit exceeded
+                  value:
+                    timestamp: "2026-11-15T03:30:00"
+                    status: 400
+                    error: Bad Request
+                    message: Un cliente personal solo puede tener un único crédito
+                inactiveCustomer:
+                  summary: Customer is inactive or not synced
+                  value:
+                    timestamp: "2026-11-15T03:30:00"
+                    status: 400
+                    error: Bad Request
+                    message: El cliente se encuentra inactivo
+                overdueDebt:
+                  summary: Customer blocked due to overdue credit debt
+                  value:
+                    timestamp: "2026-11-15T03:30:00"
+                    status: 400
+                    error: Bad Request
+                    message: El cliente posee una deuda vencida en un producto de crédito y no puede adquirir nuevos productos
 
   /api/credits/cards:
     post:
@@ -54,7 +76,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreditCard'
+              $ref: "#/components/schemas/CreditCard"
             examples:
               vipCreditCard:
                 summary: Credit Card for VIP/PYME Eligibility
@@ -63,18 +85,40 @@ paths:
                   creditLimit: 8000.00
                   currency: PEN
       responses:
-        '201':
+        "201":
           description: Credit card issued and synchronization event published to Kafka.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CreditCard'
-        '400':
-          description: Customer not registered or inactive in local replica.
+                $ref: "#/components/schemas/CreditCard"
+        "400":
+          description: Business rule violation (e.g., customer not found, inactive customer, or customer has overdue debt in a credit product).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                customerNotFound:
+                  summary: Customer not found in local replica
+                  value:
+                    timestamp: "2026-11-15T03:30:00"
+                    status: 400
+                    error: Bad Request
+                    message: Cliente no encontrado en la réplica local
+                inactiveCustomer:
+                  summary: Customer is inactive
+                  value:
+                    timestamp: "2026-11-15T03:30:00"
+                    status: 400
+                    error: Bad Request
+                    message: El cliente se encuentra inactivo
+                overdueDebt:
+                  summary: Customer blocked due to overdue credit debt
+                  value:
+                    timestamp: "2026-11-15T03:30:00"
+                    status: 400
+                    error: Bad Request
+                    message: El cliente posee una deuda vencida en un producto de crédito y no puede adquirir nuevos productos
 
   /api/credits/customer/{customerId}:
     get:
@@ -89,14 +133,14 @@ paths:
             type: string
             example: 65f1a2b3c4d5e6f7a8b9c001
       responses:
-        '200':
+        "200":
           description: Reactive stream of customer credits.
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Credit'
+                  $ref: "#/components/schemas/Credit"
 
   /api/credits/cards/number/{cardNumber}:
     get:
@@ -111,13 +155,13 @@ paths:
             type: string
             example: "4557111122223333"
       responses:
-        '200':
+        "200":
           description: Credit card details retrieved.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CreditCard'
-        '404':
+                $ref: "#/components/schemas/CreditCard"
+        "404":
           description: Credit card number does not exist.
 
   /api/credits/payment:
@@ -130,20 +174,20 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreditPaymentRequest'
+              $ref: "#/components/schemas/CreditPaymentRequest"
       responses:
-        '200':
+        "200":
           description: Credit payment processed and receipt generated.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CreditTransaction'
-        '400':
+                $ref: "#/components/schemas/CreditTransaction"
+        "400":
           description: Credit not found or invalid payment payload.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/credits/cards/operation:
     post:
@@ -155,20 +199,47 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CardOperationRequest'
+              $ref: "#/components/schemas/CardOperationRequest"
       responses:
-        '200':
+        "200":
           description: Credit card operation processed successfully.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CreditTransaction'
-        '400':
+                $ref: "#/components/schemas/CreditTransaction"
+        "400":
           description: Insufficient credit limit, card not found, or invalid operation type.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/credits/{creditNumber}/overdue:
+    patch:
+      summary: Mark a credit as overdue (OVERDUE) and notify ecosystem via Kafka
+      description: Updates the credit status to OVERDUE and publishes a CreditOverdueEvent to Apache Kafka so both credit-service and account-service block the customer from acquiring new products.
+      operationId: reportCreditOverdue
+      parameters:
+        - name: creditNumber
+          in: path
+          required: true
+          description: Unique credit identifier (e.g., CRD-11223344)
+          schema:
+            type: string
+            example: CRD-11223344
+      responses:
+        "200":
+          description: Credit marked as OVERDUE and synchronization event emitted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Credit"
+        "400":
+          description: Credit number not found or invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
 components:
   schemas:
@@ -342,7 +413,7 @@ components:
         timestamp:
           type: string
           format: date-time
-    
+
     ErrorResponse:
       type: object
       properties:

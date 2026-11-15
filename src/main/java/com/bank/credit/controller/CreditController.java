@@ -22,14 +22,20 @@ public class CreditController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<Credit> createCredit(@RequestBody Credit credit) { return creditService.createCredit(credit); }
+    public Mono<Credit> createCredit(@RequestBody Credit credit) {
+        return creditService.createCredit(credit);
+    }
 
     @PostMapping("/cards")
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<CreditCard> createCreditCard(@RequestBody CreditCard card) { return creditService.createCreditCard(card); }
+    public Mono<CreditCard> createCreditCard(@RequestBody CreditCard card) {
+        return creditService.createCreditCard(card);
+    }
 
     @GetMapping("/customer/{customerId}")
-    public Flux<Credit> getCreditsByCustomer(@PathVariable String customerId) { return creditService.getCreditsByCustomerId(customerId); }
+    public Flux<Credit> getCreditsByCustomer(@PathVariable String customerId) {
+        return creditService.getCreditsByCustomerId(customerId);
+    }
 
     @GetMapping("/cards/number/{cardNumber}")
     public Mono<ResponseEntity<CreditCard>> getCardByNumber(@PathVariable String cardNumber) {
@@ -58,5 +64,11 @@ public class CreditController {
         return creditService.executeCardOperation(cardNumber, type, amount, description)
                 .map(ResponseEntity::ok)
                 .onErrorResume(IllegalArgumentException.class, ex -> Mono.just(ResponseEntity.badRequest().build()));
+    }
+
+    @PatchMapping("/{creditNumber}/overdue")
+    public Mono<ResponseEntity<Credit>> reportCreditOverdue(@PathVariable String creditNumber) {
+        return creditService.reportCreditOverdue(creditNumber)
+                .map(ResponseEntity::ok);
     }
 }

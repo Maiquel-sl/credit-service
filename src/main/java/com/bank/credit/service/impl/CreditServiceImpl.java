@@ -1,6 +1,7 @@
 package com.bank.credit.service.impl;
 
 import com.bank.credit.events.CreditCardCreatedEvent;
+import com.bank.credit.events.CreditOverdueEvent;
 import com.bank.credit.events.CreditTransactionEvent;
 import com.bank.credit.messaging.CreditEventPublisher;
 import com.bank.credit.model.*;
@@ -26,10 +27,10 @@ public class CreditServiceImpl implements CreditService {
     private final CreditEventPublisher eventPublisher;
 
     public CreditServiceImpl(CreditRepository creditRepository,
-                             CreditCardRepository cardRepository,
-                             CreditTransactionRepository transactionRepository,
-                             CustomerReplicaRepository customerReplicaRepository,
-                             CreditEventPublisher eventPublisher) {
+            CreditCardRepository cardRepository,
+            CreditTransactionRepository transactionRepository,
+            CustomerReplicaRepository customerReplicaRepository,
+            CreditEventPublisher eventPublisher) {
         this.creditRepository = creditRepository;
         this.cardRepository = cardRepository;
         this.transactionRepository = transactionRepository;
@@ -41,7 +42,8 @@ public class CreditServiceImpl implements CreditService {
     @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
     @TimeLimiter(name = "bankServiceCB")
     public Mono<Credit> createCredit(Credit credit) {
-        // 1. Validación local contra la réplica de clientes (sin obligación de tener cuenta bancaria)
+        // 1. Validación local contra la réplica de clientes (sin obligación de tener
+        // cuenta bancaria)
         return customerReplicaRepository.findById(credit.getCustomerId())
                 .switchIfEmpty(Mono.error(new IllegalArgumentException("Cliente no encontrado en la réplica local")))
                 .flatMap(customer -> {
@@ -60,14 +62,20 @@ public class CreditServiceImpl implements CreditService {
                                     return Mono.error(new IllegalArgumentException(
                                             "Un cliente personal solo puede tener un único crédito"));
                                 }
-
-                                credit.setType("PERSONAL".equals(verifiedType) ? "PERSONAL_CREDIT" : "BUSINESS_CREDIT");
-                                credit.setCreditNumber("CRD-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
-                                credit.setBalanceOwed(credit.getAmountGranted());
-                                credit.setStatus("ACTIVE");
-                                credit.setCreatedAt(LocalDateTime.now());
-                                credit.setUpdatedAt(LocalDateTime.now());
-                                return creditRepository.save(credit);
+                                // Validar que no tenga deudas vencidas antes de otorgar crédito
+                                return validateNoOverdueDebt(credit.getCustomerId())
+                                        .then(Mono.defer(() -> {
+                                            credit.setType("PERSONAL".equals(verifiedType) ? "PERSONAL_CREDIT"
+                                                    : "BUSINESS_CREDIT");
+                                            credit.setCreditNumber(
+                                                    "CRD-" + UUID.randomUUID().toString().substring(0, 8)
+                                                            .toUpperCase());
+                                            credit.setBalanceOwed(credit.getAmountGranted());
+                                            credit.setStatus("ACTIVE");
+                                            credit.setCreatedAt(LocalDateTime.now());
+                                            credit.setUpdatedAt(LocalDateTime.now());
+                                            return creditRepository.save(credit);
+                                        }));
                             });
                 });
     }
@@ -78,36 +86,47 @@ public class CreditServiceImpl implements CreditService {
     public Mono<CreditCard> createCreditCard(CreditCard card) {
         // Validación local contra la réplica de clientes
         return customerReplicaRepository.findById(card.getCustomerId())
-            .switchIfEmpty(Mono.error(new IllegalArgumentException("Cliente no encontrado en la réplica local")))
-            .flatMap(customer -> {
-                if (!"ACTIVE".equals(customer.getStatus())) {
-                    return Mono.error(new IllegalArgumentException("El cliente se encuentra inactivo"));
-                }
-                card.setCustomerType(customer.getType());
-                card.setCardNumber("4557" + UUID.randomUUID().toString().replaceAll("[\\D]", "").substring(0, 12));
-                card.setAvailableBalance(card.getCreditLimit());
-                card.setBalanceOwed(BigDecimal.ZERO);
-                card.setStatus("ACTIVE");
-                card.setExpirationDate("11/31");
-                card.setCreatedAt(LocalDateTime.now());
-                card.setUpdatedAt(LocalDateTime.now());
+                .switchIfEmpty(Mono.error(new IllegalArgumentException("Cliente no encontrado en la réplica local")))
+                .flatMap(customer -> {
+                    if (!"ACTIVE".equals(customer.getStatus())) {
+                        return Mono.error(new IllegalArgumentException("El cliente se encuentra inactivo"));
+                    }
 
-                return cardRepository.save(card)
-                        .doOnSuccess(savedCard -> eventPublisher.publishCardCreated(
-                                new CreditCardCreatedEvent(savedCard.getId(), savedCard.getCustomerId(), "ACTIVE", LocalDateTime.now())
-                        ));
-            });
-        }
+                    // Validar que no tenga deudas vencidas antes de emitir tarjeta
+                    return validateNoOverdueDebt(card.getCustomerId())
+                            .then(Mono.defer(() -> {
+                                card.setCustomerType(customer.getType());
+                                card.setCardNumber(
+                                        "4557" + UUID.randomUUID().toString().replaceAll("[\\D]", "").substring(0, 12));
+                                card.setAvailableBalance(card.getCreditLimit());
+                                card.setBalanceOwed(BigDecimal.ZERO);
+                                card.setStatus("ACTIVE");
+                                card.setExpirationDate("11/31");
+                                card.setCreatedAt(LocalDateTime.now());
+                                card.setUpdatedAt(LocalDateTime.now());
+
+                                return cardRepository.save(card)
+                                        .doOnSuccess(savedCard -> eventPublisher.publishCardCreated(
+                                                new CreditCardCreatedEvent(savedCard.getId(), savedCard.getCustomerId(),
+                                                        "ACTIVE",
+                                                        LocalDateTime.now())));
+                            }));
+                });
+    }
 
     @Override
     @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericFluxFallback")
     @TimeLimiter(name = "bankServiceCB")
-    public Flux<Credit> getCreditsByCustomerId(String customerId) { return creditRepository.findByCustomerId(customerId); }
+    public Flux<Credit> getCreditsByCustomerId(String customerId) {
+        return creditRepository.findByCustomerId(customerId);
+    }
 
     @Override
     @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
     @TimeLimiter(name = "bankServiceCB")
-    public Mono<CreditCard> getCreditCardByNumber(String cardNumber) { return cardRepository.findByCardNumber(cardNumber); }
+    public Mono<CreditCard> getCreditCardByNumber(String cardNumber) {
+        return cardRepository.findByCardNumber(cardNumber);
+    }
 
     @Override
     @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
@@ -129,8 +148,8 @@ public class CreditServiceImpl implements CreditService {
                     tx.setTimestamp(LocalDateTime.now());
 
                     return creditRepository.save(credit)
-                    .then(transactionRepository.save(tx))
-                    .doOnSuccess(savedTx -> eventPublisher.publish(new CreditTransactionEvent(
+                            .then(transactionRepository.save(tx))
+                            .doOnSuccess(savedTx -> eventPublisher.publish(new CreditTransactionEvent(
                                     savedTx.getTransactionNumber(),
                                     credit.getCustomerId(),
                                     credit.getId(),
@@ -141,15 +160,15 @@ public class CreditServiceImpl implements CreditService {
                                     savedTx.getAmount(),
                                     credit.getCurrency(),
                                     savedTx.getDescription(),
-                                    savedTx.getTimestamp()
-                            )));
+                                    savedTx.getTimestamp())));
                 });
     }
 
     @Override
     @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
     @TimeLimiter(name = "bankServiceCB")
-    public Mono<CreditTransaction> executeCardOperation(String cardNumber, String type, BigDecimal amount, String description) {
+    public Mono<CreditTransaction> executeCardOperation(String cardNumber, String type, BigDecimal amount,
+            String description) {
         return cardRepository.findByCardNumber(cardNumber)
                 .switchIfEmpty(Mono.error(new RuntimeException("Tarjeta de crédito no encontrada")))
                 .flatMap(card -> {
@@ -180,13 +199,13 @@ public class CreditServiceImpl implements CreditService {
                     tx.setTimestamp(LocalDateTime.now());
 
                     // Determina el subtipo dinámicamente según el perfil del cliente
-                    String subType = "PERSONAL".equals(card.getCustomerType()) 
-                            ? "PERSONAL_CREDIT_CARD" 
+                    String subType = "PERSONAL".equals(card.getCustomerType())
+                            ? "PERSONAL_CREDIT_CARD"
                             : "BUSINESS_CREDIT_CARD";
 
                     return cardRepository.save(card)
-                    .then(transactionRepository.save(tx))
-                    .doOnSuccess(savedTx -> eventPublisher.publish(new CreditTransactionEvent(
+                            .then(transactionRepository.save(tx))
+                            .doOnSuccess(savedTx -> eventPublisher.publish(new CreditTransactionEvent(
                                     savedTx.getTransactionNumber(),
                                     card.getCustomerId(),
                                     card.getId(),
@@ -197,8 +216,42 @@ public class CreditServiceImpl implements CreditService {
                                     savedTx.getAmount(),
                                     card.getCurrency(),
                                     savedTx.getDescription(),
-                                    savedTx.getTimestamp()
-                            )));
+                                    savedTx.getTimestamp())));
+                });
+    }
+
+    // Endpoint/Método para reportar morosidad (OVERDUE) y notificar a
+    // account-service por Kafka
+    @Override
+    @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
+    @TimeLimiter(name = "bankServiceCB")
+    public Mono<Credit> reportCreditOverdue(String creditNumber) {
+        return creditRepository.findByCreditNumber(creditNumber.trim())
+                .switchIfEmpty(Mono.error(new IllegalArgumentException("Crédito no encontrado")))
+                .flatMap(credit -> {
+                    credit.setStatus("OVERDUE");
+                    credit.setUpdatedAt(LocalDateTime.now());
+                    return creditRepository.save(credit)
+                            .doOnSuccess(saved -> eventPublisher.publishOverdueStatus(
+                                    new CreditOverdueEvent(saved.getCustomerId(), true, saved.getCreditNumber(),
+                                            LocalDateTime.now())));
+                });
+    }
+
+    private Mono<Void> validateNoOverdueDebt(String customerId) {
+        Mono<Boolean> hasOverdueCredits = creditRepository.findByCustomerId(customerId)
+                .any(c -> "OVERDUE".equals(c.getStatus()));
+
+        Mono<Boolean> hasOverdueCards = cardRepository.findByCustomerId(customerId)
+                .any(card -> "OVERDUE".equals(card.getStatus()));
+
+        return Mono.zip(hasOverdueCredits, hasOverdueCards)
+                .flatMap(tuple -> {
+                    if (tuple.getT1() || tuple.getT2()) {
+                        return Mono.error(new IllegalArgumentException(
+                                "El cliente posee una deuda vencida en un producto de crédito y no puede adquirir nuevos productos"));
+                    }
+                    return Mono.empty();
                 });
     }
 
