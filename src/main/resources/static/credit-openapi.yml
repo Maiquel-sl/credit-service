@@ -1,18 +1,19 @@
 openapi: 3.1.0
 info:
-  title: Bank Credit and Card Management Microservice (credit-service)
-  description: Reactive Open-API Contract managing traditional Credit products and revolving Credit Card lines with instantaneous limit validation.
-  version: 1.0.0
+  title: Credit & Credit Card Microservice (credit-service)
+  description: Reactive Open-API Contract managing Personal/Business Credits and Credit Cards. Validates customers locally via Kafka replicas and publishes CreditCardCreatedEvent (to unlock VIP/PYME accounts) and CreditTransactionEvent (for ledger reporting).
+  version: 2.0.0
 servers:
   - url: http://localhost:8080
     description: API Gateway Entry Point
   - url: http://localhost:8083
     description: Direct Credit Service Instance
+
 paths:
   /api/credits:
     post:
-      summary: Issue a new traditional credit line
-      description: Provisions a Personal or Business Credit contract. Blocks execution if a personal client attempts to clone or secure more than one credit.
+      summary: Grant a new Personal or Business Credit
+      description: Validates customer status via local Kafka replica (no bank account required). Enforces the single-credit rule for PERSONAL customers.
       operationId: createCredit
       requestBody:
         required: true
@@ -20,20 +21,33 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/Credit'
+            examples:
+              personalCredit:
+                summary: Personal Loan Request
+                value:
+                  customerId: 65f1a2b3c4d5e6f7a8b9c001
+                  amountGranted: 5000.00
+                  currency: PEN
+                  interestRate: 12.5
+                  installments: 12
       responses:
         '201':
-          description: Financial credit entity provisioned and logged successfully.
+          description: Credit granted and provisioned successfully.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Credit'
         '400':
-          description: Business policy deviation or invalid parameters supplied.
+          description: Customer not found/inactive or Personal customer already holds an active credit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/credits/cards:
     post:
-      summary: Provision a new revolving credit card
-      description: Issues a personal or enterprise credit card product initialized with default billing terms and limit matching parameters.
+      summary: Issue a new Credit Card (Unlocks VIP & PYME accounts)
+      description: Provisions a Credit Card and publishes a CreditCardCreatedEvent to Kafka so account-service updates its local replica and allows VIP/PYME account openings.
       operationId: createCreditCard
       requestBody:
         required: true
@@ -41,29 +55,42 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CreditCard'
+            examples:
+              vipCreditCard:
+                summary: Credit Card for VIP/PYME Eligibility
+                value:
+                  customerId: 65f1a2b3c4d5e6f7a8b9c001
+                  creditLimit: 8000.00
+                  currency: PEN
       responses:
         '201':
-          description: Revolving credit card issued successfully.
+          description: Credit card issued and synchronization event published to Kafka.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreditCard'
+        '400':
+          description: Customer not registered or inactive in local replica.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/credits/customer/{customerId}:
     get:
-      summary: Retrieve all active credits for a Customer ID
-      description: Streams a non-blocking collection matching every traditional credit account linked to the targeted identifier.
+      summary: Retrieve all credits belonging to a Customer ID
       operationId: getCreditsByCustomer
       parameters:
         - name: customerId
           in: path
           required: true
-          description: Target customer hexadecimal unique identifier string
+          description: Customer hexadecimal identifier
           schema:
             type: string
+            example: 65f1a2b3c4d5e6f7a8b9c001
       responses:
         '200':
-          description: Continuous array stream of traditional credits.
+          description: Reactive stream of customer credits.
           content:
             application/json:
               schema:
@@ -73,101 +100,75 @@ paths:
 
   /api/credits/cards/number/{cardNumber}:
     get:
-      summary: Find a credit card by its primary card number
+      summary: Find a Credit Card by its 16-digit card number
       operationId: getCardByNumber
       parameters:
         - name: cardNumber
           in: path
           required: true
-          description: The 16-digit alphanumeric card number identifier
+          description: 16-digit Credit Card number
           schema:
             type: string
+            example: "4557111122223333"
       responses:
         '200':
-          description: Credit card account details fetched accurately.
+          description: Credit card details retrieved.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreditCard'
         '404':
-          description: Target credit card number could not be found.
+          description: Credit card number does not exist.
 
   /api/credits/payment:
     post:
-      summary: Process an installment payment toward a traditional credit
-      description: Amortizes outstanding debt balances on an active traditional loan account.
+      summary: Execute a payment towards a Credit loan
+      description: Reduces the owed balance of a credit and publishes a CreditTransactionEvent to Kafka for transaction-service auditing.
       operationId: executeCreditPayment
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - creditNumber
-                - amount
-                - description
-              properties:
-                creditNumber:
-                  type: string
-                  example: CRD-A2B3C4D5
-                amount:
-                  type: number
-                  format: double
-                  example: 500.00
-                description:
-                  type: string
-                  example: Regular monthly payment
+              $ref: '#/components/schemas/CreditPaymentRequest'
       responses:
         '200':
-          description: Balance adjusted and transactional invoice record generated.
+          description: Credit payment processed and receipt generated.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreditTransaction'
-        '404':
-          description: Targeted credit reference missing from system records.
+        '400':
+          description: Credit not found or invalid payment payload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/credits/cards/operation:
     post:
-      summary: Post a credit card operation (Consumption or Payment)
-      description: Validates current liquidity threshold on consumption sweeps. Deducts or replenishes revolving balances immediately.
+      summary: Execute a consumption or payment on a Credit Card
+      description: Processes CARD_CONSUMPTION (deducts available credit line) or CARD_PAYMENT (restores credit line) and emits an event to Kafka so it appears in the card's last 10 movements report.
       operationId: executeCardOperation
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - cardNumber
-                - type
-                - amount
-                - description
-              properties:
-                cardNumber:
-                  type: string
-                  example: "4557111122223333"
-                type:
-                  type: string
-                  enum: [CARD_CONSUMPTION, CARD_PAYMENT]
-                  example: CARD_CONSUMPTION
-                amount:
-                  type: number
-                  format: double
-                  example: 120.75
-                description:
-                  type: string
-                  example: POS retail terminal checkout
+              $ref: '#/components/schemas/CardOperationRequest'
       responses:
         '200':
-          description: Line capacity adjusted and audit verification entry returned.
+          description: Credit card operation processed successfully.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreditTransaction'
         '400':
-          description: Balance allocation overflow or invalid transactional direction.
+          description: Insufficient credit limit, card not found, or invalid operation type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
 components:
   schemas:
@@ -175,18 +176,15 @@ components:
       type: object
       required:
         - customerId
-        - customerType
-        - type
         - amountGranted
-        - balanceOwed
         - currency
       properties:
         id:
           type: string
-          example: 65f1a2b3c4d5e6f7a8b9c201
+          example: 6736b1a2c3d4e5f6a7b80101
         creditNumber:
           type: string
-          example: CRD-A2B3C4D5
+          example: CRD-11223344
         customerId:
           type: string
           example: 65f1a2b3c4d5e6f7a8b9c001
@@ -198,9 +196,6 @@ components:
           type: string
           enum: [PERSONAL_CREDIT, BUSINESS_CREDIT]
           example: PERSONAL_CREDIT
-        status:
-          type: string
-          example: ACTIVE
         amountGranted:
           type: number
           format: double
@@ -208,10 +203,21 @@ components:
         balanceOwed:
           type: number
           format: double
-          example: 3200.00
+          example: 4000.00
         currency:
           type: string
           example: PEN
+        interestRate:
+          type: number
+          format: double
+          example: 12.5
+        installments:
+          type: integer
+          example: 12
+        status:
+          type: string
+          enum: [ACTIVE, PAID, OVERDUE]
+          example: ACTIVE
         createdAt:
           type: string
           format: date-time
@@ -223,13 +229,12 @@ components:
       type: object
       required:
         - customerId
-        - customerType
         - creditLimit
         - currency
       properties:
         id:
           type: string
-          example: 65f1a2b3c4d5e6f7a8b9c203
+          example: 6736b1a2c3d4e5f6a7b80202
         cardNumber:
           type: string
           example: "4557111122223333"
@@ -240,24 +245,25 @@ components:
           type: string
           enum: [PERSONAL, ENTERPRISE]
           example: PERSONAL
-        status:
-          type: string
-          example: ACTIVE
         creditLimit:
           type: number
           format: double
-          example: 3000.00
+          example: 8000.00
         availableBalance:
           type: number
           format: double
-          example: 2150.00
+          example: 7550.00
         balanceOwed:
           type: number
           format: double
-          example: 850.00
+          example: 450.00
         currency:
           type: string
           example: PEN
+        status:
+          type: string
+          enum: [ACTIVE, BLOCKED]
+          example: ACTIVE
         expirationDate:
           type: string
           example: "11/31"
@@ -268,15 +274,53 @@ components:
           type: string
           format: date-time
 
+    CreditPaymentRequest:
+      type: object
+      required:
+        - creditNumber
+        - amount
+      properties:
+        creditNumber:
+          type: string
+          example: CRD-11223344
+        amount:
+          type: number
+          format: double
+          example: 1000.00
+        description:
+          type: string
+          example: Monthly installment payment #1
+
+    CardOperationRequest:
+      type: object
+      required:
+        - cardNumber
+        - type
+        - amount
+      properties:
+        cardNumber:
+          type: string
+          example: "4557111122223333"
+        type:
+          type: string
+          enum: [CARD_CONSUMPTION, CARD_PAYMENT]
+          example: CARD_CONSUMPTION
+        amount:
+          type: number
+          format: double
+          example: 450.00
+        description:
+          type: string
+          example: Airline tickets purchase
+
     CreditTransaction:
       type: object
       properties:
         id:
           type: string
-          example: 65f1a2b3c4d5e6f7a8b9c204
         transactionNumber:
           type: string
-          example: TXN-CRD-20260315-089
+          example: TXN-CC-99887766
         productType:
           type: string
           enum: [CREDIT, CREDIT_CARD]
@@ -291,10 +335,26 @@ components:
         amount:
           type: number
           format: double
-          example: 150.00
+          example: 450.00
         description:
           type: string
-          example: E-commerce charge validation
+          example: Airline tickets purchase
         timestamp:
           type: string
           format: date-time
+    
+    ErrorResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+          example: 400
+        error:
+          type: string
+          example: Bad Request
+        message:
+          type: string
+          example: Customer not found or inactive.

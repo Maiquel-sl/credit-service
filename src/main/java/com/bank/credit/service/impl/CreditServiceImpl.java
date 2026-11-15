@@ -1,5 +1,6 @@
 package com.bank.credit.service.impl;
 
+import com.bank.credit.events.CreditCardCreatedEvent;
 import com.bank.credit.events.CreditTransactionEvent;
 import com.bank.credit.messaging.CreditEventPublisher;
 import com.bank.credit.model.*;
@@ -77,23 +78,26 @@ public class CreditServiceImpl implements CreditService {
     public Mono<CreditCard> createCreditCard(CreditCard card) {
         // Validación local contra la réplica de clientes
         return customerReplicaRepository.findById(card.getCustomerId())
-                .switchIfEmpty(Mono.error(new IllegalArgumentException("Cliente no encontrado en la réplica local")))
-                .flatMap(customer -> {
-                    if (!"ACTIVE".equals(customer.getStatus())) {
-                        return Mono.error(new IllegalArgumentException("El cliente se encuentra inactivo"));
-                    }
+            .switchIfEmpty(Mono.error(new IllegalArgumentException("Cliente no encontrado en la réplica local")))
+            .flatMap(customer -> {
+                if (!"ACTIVE".equals(customer.getStatus())) {
+                    return Mono.error(new IllegalArgumentException("El cliente se encuentra inactivo"));
+                }
+                card.setCustomerType(customer.getType());
+                card.setCardNumber("4557" + UUID.randomUUID().toString().replaceAll("[\\D]", "").substring(0, 12));
+                card.setAvailableBalance(card.getCreditLimit());
+                card.setBalanceOwed(BigDecimal.ZERO);
+                card.setStatus("ACTIVE");
+                card.setExpirationDate("11/31");
+                card.setCreatedAt(LocalDateTime.now());
+                card.setUpdatedAt(LocalDateTime.now());
 
-                    card.setCustomerType(customer.getType());
-                    card.setCardNumber("4557" + UUID.randomUUID().toString().replaceAll("[\\D]", "").substring(0, 12));
-                    card.setAvailableBalance(card.getCreditLimit());
-                    card.setBalanceOwed(BigDecimal.ZERO);
-                    card.setStatus("ACTIVE");
-                    card.setExpirationDate("11/31");
-                    card.setCreatedAt(LocalDateTime.now());
-                    card.setUpdatedAt(LocalDateTime.now());
-                    return cardRepository.save(card);
-                });
-    }
+                return cardRepository.save(card)
+                        .doOnSuccess(savedCard -> eventPublisher.publishCardCreated(
+                                new CreditCardCreatedEvent(savedCard.getId(), savedCard.getCustomerId(), "ACTIVE", LocalDateTime.now())
+                        ));
+            });
+        }
 
     @Override
     @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericFluxFallback")

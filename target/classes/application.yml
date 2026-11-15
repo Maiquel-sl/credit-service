@@ -5,7 +5,7 @@ spring:
     uri: ${MONGODB_URI:mongodb://localhost:27017/credit-service-db}
   cloud:
     function:
-      definition: creditEventProducer;customerEventConsumer
+      definition: creditEventProducer;creditCardCreatedProducer;customerEventConsumer
     stream:
       kafka:
         binder:
@@ -13,6 +13,9 @@ spring:
       bindings:
         creditEventProducer-out-0:
           destination: credit-events
+          content-type: application/json
+        creditCardCreatedProducer-out-0:
+          destination: credit-card-events
           content-type: application/json
         customerEventConsumer-in-0:
           destination: customer-events
