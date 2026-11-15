@@ -131,12 +131,31 @@ public class CreditServiceImpl implements CreditService {
     @Override
     @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
     @TimeLimiter(name = "bankServiceCB")
-    public Mono<CreditTransaction> executeCreditPayment(String creditNumber, BigDecimal amount, String description) {
-        return creditRepository.findByCreditNumber(creditNumber)
-                .switchIfEmpty(Mono.error(new RuntimeException("Crédito no encontrado")))
+    public Mono<CreditTransaction> executeCreditPayment(
+            String creditNumber, BigDecimal amount, String description, String payerCustomerId) {
+
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return Mono.error(new IllegalArgumentException("El monto del pago debe ser mayor a cero"));
+        }
+
+        return creditRepository.findByCreditNumber(creditNumber.trim())
+                .switchIfEmpty(Mono.error(new IllegalArgumentException("Crédito no encontrado")))
                 .flatMap(credit -> {
-                    credit.setBalanceOwed(credit.getBalanceOwed().subtract(amount));
+                    BigDecimal newBalanceOwed = credit.getBalanceOwed().subtract(amount);
+                    if (newBalanceOwed.compareTo(BigDecimal.ZERO) < 0) {
+                        newBalanceOwed = BigDecimal.ZERO;
+                    }
+                    credit.setBalanceOwed(newBalanceOwed);
+                    if (newBalanceOwed.compareTo(BigDecimal.ZERO) == 0) {
+                        credit.setStatus("PAID");
+                    }
                     credit.setUpdatedAt(LocalDateTime.now());
+
+                    // Trazabilidad si el pago lo realiza un cliente tercero
+                    String baseDesc = (description != null && !description.isBlank()) ? description
+                            : "Pago de cuota de crédito";
+                    String finalDescription = buildThirdPartyDescription(baseDesc, credit.getCustomerId(),
+                            payerCustomerId);
 
                     CreditTransaction tx = new CreditTransaction();
                     tx.setTransactionNumber("TXN-CRD-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
@@ -144,7 +163,7 @@ public class CreditServiceImpl implements CreditService {
                     tx.setProductIdentifier(credit.getCreditNumber());
                     tx.setType("CREDIT_PAYMENT");
                     tx.setAmount(amount);
-                    tx.setDescription(description);
+                    tx.setDescription(finalDescription);
                     tx.setTimestamp(LocalDateTime.now());
 
                     return creditRepository.save(credit)
@@ -167,26 +186,45 @@ public class CreditServiceImpl implements CreditService {
     @Override
     @CircuitBreaker(name = "bankServiceCB", fallbackMethod = "genericMonoFallback")
     @TimeLimiter(name = "bankServiceCB")
-    public Mono<CreditTransaction> executeCardOperation(String cardNumber, String type, BigDecimal amount,
-            String description) {
-        return cardRepository.findByCardNumber(cardNumber)
-                .switchIfEmpty(Mono.error(new RuntimeException("Tarjeta de crédito no encontrada")))
+    public Mono<CreditTransaction> executeCardOperation(
+            String cardNumber, String type, BigDecimal amount, String description, String payerCustomerId) {
+
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return Mono.error(new IllegalArgumentException("El monto de la operación debe ser mayor a cero"));
+        }
+
+        return cardRepository.findByCardNumber(cardNumber.trim())
+                .switchIfEmpty(Mono.error(new IllegalArgumentException("Tarjeta de crédito no encontrada")))
                 .flatMap(card -> {
-                    // Manejo de consumos o pagos de tarjetas con Pattern Matching
-                    switch (type) {
-                        case "CARD_CONSUMPTION" -> {
-                            if (card.getAvailableBalance().compareTo(amount) < 0) {
-                                throw new IllegalArgumentException("Línea de crédito insuficiente para el consumo");
-                            }
-                            card.setAvailableBalance(card.getAvailableBalance().subtract(amount));
-                            card.setBalanceOwed(card.getBalanceOwed().add(amount));
-                        }
-                        case "CARD_PAYMENT" -> {
-                            card.setAvailableBalance(card.getAvailableBalance().add(amount));
-                            card.setBalanceOwed(card.getBalanceOwed().subtract(amount));
-                        }
-                        default -> throw new IllegalArgumentException("Tipo de operación de tarjeta inválida");
+                    if (!"ACTIVE".equals(card.getStatus()) && !"OVERDUE".equals(card.getStatus())) {
+                        return Mono.error(new IllegalArgumentException("La tarjeta de crédito se encuentra bloqueada"));
                     }
+
+                    String baseDesc = (description != null && !description.isBlank()) ? description
+                            : "Operación con tarjeta de crédito";
+                    String finalDescription = baseDesc;
+
+                    if ("CARD_CONSUMPTION".equals(type)) {
+                        if (!"ACTIVE".equals(card.getStatus())) {
+                            return Mono.error(new IllegalArgumentException(
+                                    "No se permiten consumos en una tarjeta con deuda vencida"));
+                        }
+                        if (card.getAvailableBalance().compareTo(amount) < 0) {
+                            return Mono.error(
+                                    new IllegalArgumentException("Línea de crédito insuficiente para el consumo"));
+                        }
+                        card.setAvailableBalance(card.getAvailableBalance().subtract(amount));
+                        card.setBalanceOwed(card.getBalanceOwed().add(amount));
+                    } else if ("CARD_PAYMENT".equals(type)) {
+                        card.setAvailableBalance(card.getAvailableBalance().add(amount));
+                        BigDecimal newOwed = card.getBalanceOwed().subtract(amount);
+                        card.setBalanceOwed(newOwed.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : newOwed);
+                        // Trazabilidad si el abono a la tarjeta lo realiza un tercero
+                        finalDescription = buildThirdPartyDescription(baseDesc, card.getCustomerId(), payerCustomerId);
+                    } else {
+                        return Mono.error(new IllegalArgumentException("Tipo de operación inválida: " + type));
+                    }
+
                     card.setUpdatedAt(LocalDateTime.now());
 
                     CreditTransaction tx = new CreditTransaction();
@@ -195,13 +233,8 @@ public class CreditServiceImpl implements CreditService {
                     tx.setProductIdentifier(card.getCardNumber());
                     tx.setType(type);
                     tx.setAmount(amount);
-                    tx.setDescription(description);
+                    tx.setDescription(finalDescription);
                     tx.setTimestamp(LocalDateTime.now());
-
-                    // Determina el subtipo dinámicamente según el perfil del cliente
-                    String subType = "PERSONAL".equals(card.getCustomerType())
-                            ? "PERSONAL_CREDIT_CARD"
-                            : "BUSINESS_CREDIT_CARD";
 
                     return cardRepository.save(card)
                             .then(transactionRepository.save(tx))
@@ -210,7 +243,7 @@ public class CreditServiceImpl implements CreditService {
                                     card.getCustomerId(),
                                     card.getId(),
                                     "CREDIT_CARD",
-                                    subType,
+                                    card.getCustomerType() + "_CREDIT_CARD",
                                     card.getCardNumber(),
                                     savedTx.getType(),
                                     savedTx.getAmount(),
@@ -253,6 +286,15 @@ public class CreditServiceImpl implements CreditService {
                     }
                     return Mono.empty();
                 });
+    }
+
+    // Método auxiliar para registrar en la descripción cuando paga un cliente
+    // tercero
+    private String buildThirdPartyDescription(String baseDescription, String ownerCustomerId, String payerCustomerId) {
+        if (payerCustomerId != null && !payerCustomerId.isBlank() && !payerCustomerId.trim().equals(ownerCustomerId)) {
+            return baseDescription + " [Pagado por tercero - Cliente ID: " + payerCustomerId.trim() + "]";
+        }
+        return baseDescription;
     }
 
     // =========================================================================

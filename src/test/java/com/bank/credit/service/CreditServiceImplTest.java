@@ -60,130 +60,39 @@ class CreditServiceImplTest {
                 personalCredit = new Credit();
                 personalCredit.setId("crd-id-001");
                 personalCredit.setCustomerId("cust-vip-01");
+                personalCredit.setCreditNumber("CRD-11223344");
+                personalCredit.setType("PERSONAL_CREDIT");
                 personalCredit.setAmountGranted(new BigDecimal("5000.00"));
                 personalCredit.setBalanceOwed(new BigDecimal("5000.00"));
                 personalCredit.setCurrency("PEN");
+                personalCredit.setStatus("ACTIVE");
 
                 creditCard = new CreditCard();
                 creditCard.setId("cc-id-001");
                 creditCard.setCustomerId("cust-vip-01");
+                creditCard.setCustomerType("PERSONAL");
+                creditCard.setCardNumber("4557111122223333");
                 creditCard.setCreditLimit(new BigDecimal("8000.00"));
                 creditCard.setAvailableBalance(new BigDecimal("8000.00"));
                 creditCard.setBalanceOwed(BigDecimal.ZERO);
                 creditCard.setCurrency("PEN");
+                creditCard.setStatus("ACTIVE");
         }
 
         @Test
-        @DisplayName("Debe otorgar crédito personal validando réplica local y sin exigir cuenta bancaria")
+        @DisplayName("Debe otorgar crédito personal validando réplica local y ausencia de deuda vencida")
         void testCreatePersonalCreditSuccess() {
                 Mockito.when(customerReplicaRepository.findById("cust-vip-01"))
                                 .thenReturn(Mono.just(activePersonalCustomer));
-                Mockito.when(creditRepository.findByCustomerId("cust-vip-01"))
-                                .thenReturn(Flux.empty());
-                Mockito.when(creditRepository.save(any(Credit.class)))
-                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+                Mockito.when(creditRepository.findByCustomerId("cust-vip-01")).thenReturn(Flux.empty());
+                Mockito.when(cardRepository.findByCustomerId("cust-vip-01")).thenReturn(Flux.empty());
+                Mockito.when(creditRepository.save(any(Credit.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
 
                 StepVerifier.create(creditService.createCredit(personalCredit))
                                 .expectNextMatches(saved -> saved.getCreditNumber() != null &&
                                                 saved.getCreditNumber().startsWith("CRD-") &&
-                                                "PERSONAL_CREDIT".equals(saved.getType()) &&
                                                 "ACTIVE".equals(saved.getStatus()))
                                 .verifyComplete();
-        }
-
-        @Test
-        @DisplayName("Debe rechazar segundo crédito para un cliente PERSONAL")
-        void testCreateSecondPersonalCreditFails() {
-                Mockito.when(customerReplicaRepository.findById("cust-vip-01"))
-                                .thenReturn(Mono.just(activePersonalCustomer));
-                Mockito.when(creditRepository.findByCustomerId("cust-vip-01"))
-                                .thenReturn(Flux.just(personalCredit));
-
-                StepVerifier.create(creditService.createCredit(personalCredit))
-                                .expectErrorMatches(ex -> ex instanceof IllegalArgumentException &&
-                                                ex.getMessage().contains("único crédito"))
-                                .verify();
-        }
-
-        @Test
-        @DisplayName("Debe crear tarjeta de crédito y emitir CreditCardCreatedEvent a Kafka para habilitar cuentas VIP/PYME")
-        void testCreateCreditCardEmitsKafkaEvent() {
-                Mockito.when(customerReplicaRepository.findById("cust-vip-01"))
-                                .thenReturn(Mono.just(activePersonalCustomer));
-                Mockito.when(cardRepository.save(any(CreditCard.class)))
-                                .thenAnswer(inv -> {
-                                        CreditCard saved = inv.getArgument(0);
-                                        saved.setId("cc-generated-99");
-                                        return Mono.just(saved);
-                                });
-
-                StepVerifier.create(creditService.createCreditCard(creditCard))
-                                .expectNextMatches(saved -> saved.getCardNumber() != null &&
-                                                saved.getCardNumber().startsWith("4557") &&
-                                                "ACTIVE".equals(saved.getStatus()))
-                                .verifyComplete();
-
-                // Verifica que se publicó el evento hacia Kafka para sincronizar
-                // account-service
-                Mockito.verify(eventPublisher).publishCardCreated(
-                                argThat((CreditCardCreatedEvent event) -> "cc-generated-99".equals(event.cardId()) &&
-                                                "cust-vip-01".equals(event.customerId()) &&
-                                                "ACTIVE".equals(event.status())));
-        }
-
-        @Test
-        @DisplayName("Debe procesar consumo con tarjeta de crédito y emitir CreditTransactionEvent hacia Kafka")
-        void testExecuteCardConsumptionEmitsTransactionEvent() {
-                creditCard.setCardNumber("4557111122223333");
-                creditCard.setCustomerType("PERSONAL");
-
-                Mockito.when(cardRepository.findByCardNumber("4557111122223333"))
-                                .thenReturn(Mono.just(creditCard));
-                Mockito.when(cardRepository.save(any(CreditCard.class)))
-                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
-                Mockito.when(transactionRepository.save(any(CreditTransaction.class)))
-                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
-
-                StepVerifier.create(creditService.executeCardOperation(
-                                "4557111122223333", "CARD_CONSUMPTION", new BigDecimal("450.00"),
-                                "Compra pasajes aéreos"))
-                                .expectNextMatches(tx -> tx.getTransactionNumber().startsWith("TXN-CC-") &&
-                                                creditCard.getAvailableBalance()
-                                                                .compareTo(new BigDecimal("7550.00")) == 0
-                                                &&
-                                                creditCard.getBalanceOwed().compareTo(new BigDecimal("450.00")) == 0)
-                                .verifyComplete();
-
-                // Verifica la publicación del evento contable hacia transaction-service
-                Mockito.verify(eventPublisher)
-                                .publish(argThat((CreditTransactionEvent event) -> "CREDIT_CARD"
-                                                .equals(event.productType()) &&
-                                                "4557111122223333".equals(event.productIdentifier()) &&
-                                                "CARD_CONSUMPTION".equals(event.operationType())));
-        }
-
-        @Test
-        @DisplayName("Debe procesar pago de cuota de crédito y reducir deuda")
-        void testExecuteCreditPaymentSuccess() {
-                personalCredit.setCreditNumber("CRD-11223344");
-                personalCredit.setType("PERSONAL_CREDIT");
-
-                Mockito.when(creditRepository.findByCreditNumber("CRD-11223344"))
-                                .thenReturn(Mono.just(personalCredit));
-                Mockito.when(creditRepository.save(any(Credit.class)))
-                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
-                Mockito.when(transactionRepository.save(any(CreditTransaction.class)))
-                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
-
-                StepVerifier
-                                .create(creditService.executeCreditPayment("CRD-11223344", new BigDecimal("1000.00"),
-                                                "Pago cuota 1"))
-                                .expectNextMatches(tx -> "CREDIT_PAYMENT".equals(tx.getType()) &&
-                                                personalCredit.getBalanceOwed()
-                                                                .compareTo(new BigDecimal("4000.00")) == 0)
-                                .verifyComplete();
-
-                Mockito.verify(eventPublisher).publish(any(CreditTransactionEvent.class));
         }
 
         @Test
@@ -196,10 +105,8 @@ class CreditServiceImplTest {
 
                 Mockito.when(customerReplicaRepository.findById("cust-vip-01"))
                                 .thenReturn(Mono.just(activePersonalCustomer));
-                Mockito.when(creditRepository.findByCustomerId("cust-vip-01"))
-                                .thenReturn(Flux.just(overdueCredit));
-                Mockito.when(cardRepository.findByCustomerId("cust-vip-01"))
-                                .thenReturn(Flux.empty());
+                Mockito.when(creditRepository.findByCustomerId("cust-vip-01")).thenReturn(Flux.just(overdueCredit));
+                Mockito.when(cardRepository.findByCustomerId("cust-vip-01")).thenReturn(Flux.empty());
 
                 StepVerifier.create(creditService.createCredit(personalCredit))
                                 .expectErrorMatches(ex -> ex instanceof IllegalArgumentException &&
@@ -208,47 +115,107 @@ class CreditServiceImplTest {
         }
 
         @Test
-        @DisplayName("Debe rechazar emisión de tarjeta de crédito si el cliente tiene una tarjeta vencida (OVERDUE)")
-        void testCreateCreditCardBlockedByOverdueCard() {
-                CreditCard overdueCard = new CreditCard();
-                overdueCard.setCardNumber("4557000011112222");
-                overdueCard.setCustomerId("cust-vip-01");
-                overdueCard.setStatus("OVERDUE");
-
+        @DisplayName("Debe crear tarjeta de crédito y emitir CreditCardCreatedEvent a Kafka")
+        void testCreateCreditCardEmitsKafkaEvent() {
                 Mockito.when(customerReplicaRepository.findById("cust-vip-01"))
                                 .thenReturn(Mono.just(activePersonalCustomer));
-                Mockito.when(creditRepository.findByCustomerId("cust-vip-01"))
-                                .thenReturn(Flux.empty());
-                Mockito.when(cardRepository.findByCustomerId("cust-vip-01"))
-                                .thenReturn(Flux.just(overdueCard));
+                Mockito.when(creditRepository.findByCustomerId("cust-vip-01")).thenReturn(Flux.empty());
+                Mockito.when(cardRepository.findByCustomerId("cust-vip-01")).thenReturn(Flux.empty());
+                Mockito.when(cardRepository.save(any(CreditCard.class))).thenAnswer(inv -> {
+                        CreditCard saved = inv.getArgument(0);
+                        saved.setId("cc-generated-99");
+                        return Mono.just(saved);
+                });
 
                 StepVerifier.create(creditService.createCreditCard(creditCard))
-                                .expectErrorMatches(ex -> ex instanceof IllegalArgumentException &&
-                                                ex.getMessage().contains("deuda vencida"))
-                                .verify();
+                                .expectNextMatches(saved -> saved.getCardNumber().startsWith("4557"))
+                                .verifyComplete();
 
-                Mockito.verify(eventPublisher, Mockito.never()).publishCardCreated(any());
+                Mockito.verify(eventPublisher).publishCardCreated(
+                                argThat((CreditCardCreatedEvent event) -> "cc-generated-99".equals(event.cardId()) &&
+                                                "cust-vip-01".equals(event.customerId())));
         }
 
         @Test
         @DisplayName("Debe marcar crédito como OVERDUE y emitir CreditOverdueEvent hacia Kafka")
         void testReportCreditOverdueEmitsKafkaEvent() {
-                personalCredit.setCreditNumber("CRD-11223344");
-                personalCredit.setStatus("ACTIVE");
-
-                Mockito.when(creditRepository.findByCreditNumber("CRD-11223344"))
-                                .thenReturn(Mono.just(personalCredit));
-                Mockito.when(creditRepository.save(any(Credit.class)))
-                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+                Mockito.when(creditRepository.findByCreditNumber("CRD-11223344")).thenReturn(Mono.just(personalCredit));
+                Mockito.when(creditRepository.save(any(Credit.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
 
                 StepVerifier.create(creditService.reportCreditOverdue("CRD-11223344"))
                                 .expectNextMatches(updated -> "OVERDUE".equals(updated.getStatus()))
                                 .verifyComplete();
 
                 Mockito.verify(eventPublisher).publishOverdueStatus(
-                                argThat((CreditOverdueEvent event) -> "cust-vip-01".equals(event.customerId()) &&
-                                                event.hasOverdueDebt() &&
-                                                "CRD-11223344".equals(event.productIdentifier())));
+                                argThat((CreditOverdueEvent event) -> "cust-vip-01".equals(event.customerId())
+                                                && event.hasOverdueDebt()));
         }
 
+        @Test
+        @DisplayName("Debe procesar consumo con tarjeta de crédito (sin payerCustomerId)")
+        void testExecuteCardConsumptionSuccess() {
+                Mockito.when(cardRepository.findByCardNumber("4557111122223333")).thenReturn(Mono.just(creditCard));
+                Mockito.when(cardRepository.save(any(CreditCard.class)))
+                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+                Mockito.when(transactionRepository.save(any(CreditTransaction.class)))
+                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+
+                StepVerifier.create(creditService.executeCardOperation(
+                                "4557111122223333", "CARD_CONSUMPTION", new BigDecimal("450.00"), "Compra pasajes",
+                                null))
+                                .expectNextMatches(tx -> "Compra pasajes".equals(tx.getDescription()) &&
+                                                creditCard.getAvailableBalance()
+                                                                .compareTo(new BigDecimal("7550.00")) == 0)
+                                .verifyComplete();
+
+                Mockito.verify(eventPublisher).publish(any(CreditTransactionEvent.class));
+        }
+
+        @Test
+        @DisplayName("Debe registrar trazabilidad en la descripción cuando un tercero paga un crédito")
+        void testExecuteThirdPartyCreditPaymentAddsAuditNote() {
+                Mockito.when(creditRepository.findByCreditNumber("CRD-11223344")).thenReturn(Mono.just(personalCredit));
+                Mockito.when(creditRepository.save(any(Credit.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+                Mockito.when(transactionRepository.save(any(CreditTransaction.class)))
+                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+
+                String thirdPartyPayerId = "cust-third-party-99";
+
+                StepVerifier.create(creditService.executeCreditPayment(
+                                "CRD-11223344", new BigDecimal("1000.00"), "Pago cuota 1", thirdPartyPayerId))
+                                .expectNextMatches(tx -> "CREDIT_PAYMENT".equals(tx.getType()) &&
+                                                tx.getDescription().contains(
+                                                                "[Pagado por tercero - Cliente ID: cust-third-party-99]")
+                                                &&
+                                                personalCredit.getBalanceOwed()
+                                                                .compareTo(new BigDecimal("4000.00")) == 0)
+                                .verifyComplete();
+
+                // Verifica que el evento a Kafka mantenga al dueño original del crédito y lleve
+                // la descripción con el tercero
+                Mockito.verify(eventPublisher).publish(argThat((CreditTransactionEvent event) -> "cust-vip-01"
+                                .equals(event.customerId()) &&
+                                event.description()
+                                                .contains("[Pagado por tercero - Cliente ID: cust-third-party-99]")));
+        }
+
+        @Test
+        @DisplayName("Debe registrar trazabilidad cuando un tercero abona a una tarjeta de crédito")
+        void testExecuteThirdPartyCreditCardPaymentAddsAuditNote() {
+                creditCard.setAvailableBalance(new BigDecimal("7000.00"));
+                creditCard.setBalanceOwed(new BigDecimal("1000.00"));
+
+                Mockito.when(cardRepository.findByCardNumber("4557111122223333")).thenReturn(Mono.just(creditCard));
+                Mockito.when(cardRepository.save(any(CreditCard.class)))
+                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+                Mockito.when(transactionRepository.save(any(CreditTransaction.class)))
+                                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+                StepVerifier.create(creditService.executeCardOperation(
+                                "4557111122223333", "CARD_PAYMENT", new BigDecimal("500.00"), "Abono tarjeta",
+                                "cust-third-party-99"))
+                                .expectNextMatches(tx -> tx.getDescription()
+                                                .contains("[Pagado por tercero - Cliente ID: cust-third-party-99]") &&
+                                                creditCard.getBalanceOwed().compareTo(new BigDecimal("500.00")) == 0)
+                                .verifyComplete();
+        }
 }

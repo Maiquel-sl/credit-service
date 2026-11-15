@@ -360,7 +360,12 @@ components:
           example: 1000.00
         description:
           type: string
-          example: Monthly installment payment #1
+          example: Monthly installment payment
+        payerCustomerId:
+          type: string
+          nullable: true
+          description: Optional ID of the third-party customer executing the payment.
+          example: 65f1a2b3c4d5e6f7a8b9c999
 
     CardOperationRequest:
       type: object
@@ -375,14 +380,19 @@ components:
         type:
           type: string
           enum: [CARD_CONSUMPTION, CARD_PAYMENT]
-          example: CARD_CONSUMPTION
+          example: CARD_PAYMENT
         amount:
           type: number
           format: double
           example: 450.00
         description:
           type: string
-          example: Airline tickets purchase
+          example: Third-party credit card payment
+        payerCustomerId:
+          type: string
+          nullable: true
+          description: Optional ID of the third-party customer paying the credit card.
+          example: 65f1a2b3c4d5e6f7a8b9c999
 
     CreditTransaction:
       type: object

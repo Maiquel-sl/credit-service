@@ -16,9 +16,9 @@ public interface CreditService {
 
     Mono<CreditCard> getCreditCardByNumber(String cardNumber);
 
-    Mono<CreditTransaction> executeCreditPayment(String creditNumber, BigDecimal amount, String description);
+    Mono<CreditTransaction> executeCreditPayment(String creditNumber, BigDecimal amount, String description, String payerCustomerId);
 
-    Mono<CreditTransaction> executeCardOperation(String cardNumber, String type, BigDecimal amount, String description);
+    Mono<CreditTransaction> executeCardOperation(String cardNumber, String type, BigDecimal amount, String description, String payerCustomerId);
 
     Mono<Credit> reportCreditOverdue(String creditNumber);
 }

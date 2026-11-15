@@ -45,25 +45,26 @@ public class CreditController {
     }
 
     @PostMapping("/payment")
-    public Mono<ResponseEntity<CreditTransaction>> executeCreditPayment(@RequestBody Map<String, Object> payload) {
+    public Mono<CreditTransaction> executeCreditPayment(@RequestBody Map<String, Object> payload) {
         String creditNumber = (String) payload.get("creditNumber");
         BigDecimal amount = new BigDecimal(payload.get("amount").toString());
-        String description = (String) payload.get("description");
+        String description = payload.get("description") != null ? payload.get("description").toString() : null;
+        String payerCustomerId = payload.get("payerCustomerId") != null ? payload.get("payerCustomerId").toString()
+                : null;
 
-        return creditService.executeCreditPayment(creditNumber, amount, description)
-                .map(ResponseEntity::ok);
+        return creditService.executeCreditPayment(creditNumber, amount, description, payerCustomerId);
     }
 
     @PostMapping("/cards/operation")
-    public Mono<ResponseEntity<CreditTransaction>> executeCardOperation(@RequestBody Map<String, Object> payload) {
+    public Mono<CreditTransaction> executeCardOperation(@RequestBody Map<String, Object> payload) {
         String cardNumber = (String) payload.get("cardNumber");
-        String type = (String) payload.get("type"); // CARD_CONSUMPTION o CARD_PAYMENT
+        String type = (String) payload.get("type");
         BigDecimal amount = new BigDecimal(payload.get("amount").toString());
-        String description = (String) payload.get("description");
+        String description = payload.get("description") != null ? payload.get("description").toString() : null;
+        String payerCustomerId = payload.get("payerCustomerId") != null ? payload.get("payerCustomerId").toString()
+                : null;
 
-        return creditService.executeCardOperation(cardNumber, type, amount, description)
-                .map(ResponseEntity::ok)
-                .onErrorResume(IllegalArgumentException.class, ex -> Mono.just(ResponseEntity.badRequest().build()));
+        return creditService.executeCardOperation(cardNumber, type, amount, description, payerCustomerId);
     }
 
     @PatchMapping("/{creditNumber}/overdue")
